@@ -1,0 +1,62 @@
+# starts the mock api once, then runs all 3 load scenarios against that one
+# running instance. smoke and load are expected to stay green, spike is
+# allowed to fail for real since breaching the threshold there is the whole
+# point of this project, continue on error keeps that one real failure from
+# reddening the rest of the workflow
+
+name: load tests
+
+on:
+  push:
+  pull_request:
+
+env:
+  BASE_URL: http://127.0.0.1:8000
+  K6_DISABLE_USAGE_REPORT: "true"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: install mock api deps
+        run: pip install -r mock_api/requirements.txt
+
+      - name: start mock api
+        run: |
+          nohup uvicorn mock_api.main:app --host 127.0.0.1 --port 8000 &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8000/health && break
+            sleep 1
+          done
+
+      - uses: grafana/setup-k6-action@v1
+
+      - name: make sure the results folder exists
+        run: mkdir -p results
+
+      - name: smoke test
+        run: k6 run --summary-export=results/smoke-summary.json k6/smoke.js
+
+      - name: load test
+        run: k6 run --summary-export=results/load-summary.json k6/load.js
+
+      - name: spike test
+        # expected to breach the threshold for real, thats the bug this
+        # whole project is built to catch, continue on error keeps that one
+        # real failure from failing the rest of the workflow
+        continue-on-error: true
+        run: k6 run --summary-export=results/spike-summary.json k6/spike.js
+
+      - name: upload k6 summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-results
+          path: results/
+          retention-days: 7
